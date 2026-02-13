@@ -1,0 +1,21 @@
+{
+    "args": {
+        "sim_config": "projects/demo/box_sim.config",
+        "params_config": "projects/demo/params_sample.config",
+        "gridSteadyFile": "output.vtk",
+        "check": false,
+        "mesh_size": 0.0015,
+        "show": false,
+        "export_slice": null
+    },
+    "timestamp": "2026-01-23 12:43:25",
+    "mesh": {
+        "elements": 274604,
+        "nodes": 303372,
+        "max_size": 0.002
+    },
+    "performance": {
+        "time_total": 5.171579122543335,
+        "memory_mb": 88.9477653503418
+    }
+}

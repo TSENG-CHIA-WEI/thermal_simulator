@@ -1,0 +1,32 @@
+{
+  "label": "baseline",
+  "timestamp": "2026-02-11 00:08:53",
+  "grid": {
+    "nx": 420,
+    "ny": 992,
+    "nz": 18,
+    "nx_elements": 419,
+    "ny_elements": 991,
+    "nz_elements": 17
+  },
+  "elements": {
+    "dense": 7058893,
+    "active": 6383333,
+    "fill_ratio": 90.43
+  },
+  "nodes": 7499520,
+  "timing": {
+    "mesh_gen_sec": 0.841
+  },
+  "spacing": {
+    "x_min_um": 69.53,
+    "x_max_mm": 2.5,
+    "x_median_um": 72.5,
+    "y_min_um": 60.83,
+    "y_max_mm": 1.98,
+    "y_median_um": 69.75,
+    "z_min_um": 0.45,
+    "z_max_mm": 2.0,
+    "z_median_um": 32.0
+  }
+}

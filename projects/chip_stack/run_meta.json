@@ -1,0 +1,21 @@
+{
+    "args": {
+        "sim_config": "projects\\chip_stack\\test_zseg_box.config",
+        "params_config": "projects\\chip_stack\\params_stack.config",
+        "gridSteadyFile": "output.vtk",
+        "check": true,
+        "mesh_size": null,
+        "show": false,
+        "export_slice": null
+    },
+    "timestamp": "2026-02-13 15:23:25",
+    "mesh": {
+        "elements": 774282,
+        "nodes": 2048120,
+        "max_size": 0.0001
+    },
+    "performance": {
+        "time_total": 19.90614628791809,
+        "memory_mb": 0.0
+    }
+}

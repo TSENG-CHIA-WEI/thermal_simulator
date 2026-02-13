@@ -1,0 +1,27 @@
+=== ThermoSim Simulation Report ===
+Date:                2026-01-23 12:43:25
+----------------------------------------
+Mesh Elements:       274,604
+Mesh Nodes:          303,372
+Solver Memory:       88.95 MB
+Solver Iterations:   Converged
+----------------------------------------
+Assembly Time:       2.9813 sec
+Solver Time:         2.1902 sec
+Total Computation:   5.1716 sec
+----------------------------------------
+Total Power Input:   500.0000 W
+Total Heat Loss:     500.0000 W
+Energy Balance Err:  0.0000 %
+----------------------------------------
+Global Max Temp: 95.40 C
+  At Location: X=0.020000, Y=0.020000, Z=0.005143 m
+Global Min Temp: 33.76 C
+----------------------------------------
+Component Temperatures (Nodal & Element Base):
+Layer / Box Name     | Node Max | Elem Max | Avg (C)  | Min (C) 
+------------------------------------------------------------
+Cu_Bottom            | 94.86    | 92.39    | 87.92    | 83.41   
+Molding              | 87.91    | 86.28    | 65.74    | 38.59   
+Die                  | 95.40    | 95.34    | 88.08    | 66.66   
+Cu_Top               | 90.89    | 81.81    | 64.08    | 34.26   
