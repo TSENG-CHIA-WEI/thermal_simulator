@@ -1,6 +1,7 @@
 
 import configparser
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
@@ -29,6 +30,10 @@ class BoxDef:
     power_face: str = "" # Face for surface heat source (top, bottom, etc.)
     min_elements: int = 1 # Minimum number of elements across thickness (Constraint Enforcement)
     ncm_mode: bool = False # Non-Conformal Mesh: Use local uniform grid, decoupled from global
+    mesh_weight: float = 1.0 # ROI Weighting: Multiplier for target mesh resolution (1.0 = standard)
+    smart_layer: bool = False # SmartCells Lite: Allow single element for thin layers (disable auto-refinement)
+    expansion_ratio: float = 1.2 # Mesh Stretching Ratio (1.0 = uniform)
+
 
 
 @dataclass
@@ -36,6 +41,8 @@ class SimConfig:
     boxes: List[BoxDef] = field(default_factory=list)
     ambient_temp: float = 25.0
     max_element_size: float = 0.002 # Default 2mm
+    expansion_ratio: float = 1.2 # Default expansion ratio
+
 
 def parse_val(s: str) -> float:
     """Parses a string with optional units into a float (SI units: meters, Watts, K)."""
@@ -98,8 +105,10 @@ class ConfigParser:
                 kz = float(config[section].get('kz', str(k_base)))
                 
                 self.materials[mid] = MaterialProp(k_base, rho, cp, kx, ky, kz)
-            except ValueError:
-                continue
+            except ValueError as e:
+                print(f"CRITICAL ERROR: Failed to parse material section [{section}]. Check for typos or invalid values.")
+                print(f"Details: {e}")
+                sys.exit(1)
 
     def parse_sim_config(self, filepath: str):
         config = configparser.ConfigParser()
@@ -107,7 +116,9 @@ class ConfigParser:
         
         boxes = []
         global_mesh_size = 0.002
+        global_expansion_ratio = 1.2
         env_temp = 25.0
+
         
         # Parse Sections
         for section in config.sections():
@@ -168,17 +179,44 @@ class ConfigParser:
                     ncm_str = config[section]['NCMMode'].split('#')[0].strip().lower()
                     ncm = ncm_str in ['true', '1', 'yes']
 
-                boxes.append(BoxDef(name, origin, size, mid, fp, bcs, local_mesh, prio, p_face, min_el, ncm))
+                # Parse Mesh Weight (ROI)
+                m_weight = 1.0
+                if 'MeshWeight' in config[section]:
+                     m_weight = parse_val(config[section]['MeshWeight'])
+
+                # Parse SmartLayer
+                smart = False
+                if 'SmartLayer' in config[section]:
+                    s_str = config[section]['SmartLayer'].split('#')[0].strip().lower()
+                    smart = s_str in ['true', '1', 'yes']
+
+                # Parse ExpansionRatio
+                exp_ratio = 1.2
+                if 'ExpansionRatio' in config[section]:
+                     try:
+                         exp_ratio = float(config[section]['ExpansionRatio'].split('#')[0].strip())
+                     except ValueError:
+                         pass
+
+                boxes.append(BoxDef(name, origin, size, mid, fp, bcs, local_mesh, prio, p_face, min_el, ncm, m_weight, smart, exp_ratio))
+
 
                 
             # [Mesh]
             elif sec_lower == "mesh":
                 if 'MaxElementSize' in config[section]:
                     global_mesh_size = parse_val(config[section]['MaxElementSize'])
+                if 'ExpansionRatio' in config[section]:
+                    try:
+                        global_expansion_ratio = float(config[section]['ExpansionRatio'].split('#')[0].strip())
+                    except ValueError:
+                        pass
+
                     
             # [Environment]
             elif sec_lower == "environment":
                 if 'Ambient' in config[section]:
                     env_temp = parse_val(config[section]['Ambient'])
             
-        self.sim_config = SimConfig(boxes=boxes, ambient_temp=env_temp, max_element_size=global_mesh_size)
+        self.sim_config = SimConfig(boxes=boxes, ambient_temp=env_temp, max_element_size=global_mesh_size, expansion_ratio=global_expansion_ratio)
+

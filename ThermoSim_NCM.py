@@ -3,10 +3,11 @@ import argparse
 import sys
 import os
 import numpy as np
+import logging
 
 from config_parser import ConfigParser
 from layout_parser import LayoutParser
-from mesh_core import ActiveMeshGenerator, Mesh3D
+from mesh_core_ncm import ActiveMeshGenerator, Mesh3D
 from post_process import VTKExporter
 from fem_engine import ThermalSolver3D
 
@@ -29,13 +30,23 @@ def main():
     # Switch to Project Directory
     project_dir = os.path.dirname(abs_sim_config)
     os.chdir(project_dir)
-    print(f"Working Directory switched to: {os.getcwd()}")
     
     # Setup Logger (Now in Project Dir)
     if not args.check:
-        sys.stdout = Logger()
+        # Configure Logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(message)s',
+            handlers=[
+                logging.FileHandler("solver.log", mode='w'),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+        # Verify handler
+        logging.info(f"Logging initialized. Log file: {os.path.abspath('solver.log')}")
         
-    print("=== ThermoSim v9.0 (Interactive) ===")
+    logging.info(f"Working Directory switched to: {os.getcwd()}")
+    logging.info("=== ThermoSim v10.2 (Hardened) ===")
     
     # 1. Load Configs (Use Absolute Paths)
     cfg = ConfigParser()
@@ -44,12 +55,12 @@ def main():
     mesh_res = args.mesh_size if args.mesh_size is not None else cfg.sim_config.max_element_size
     
     # 2. Generate Active Mesh
-    print(f"Generating Active Sparse Mesh (Max Size: {mesh_res}m)...")
+    logging.info(f"Generating Active Sparse Mesh (Max Size: {mesh_res}m)...")
     gen = ActiveMeshGenerator(cfg.sim_config, max_element_size=mesh_res)
     mesh = gen.generate()
     
     # 3. Floorplan Mapping
-    power_field_dense = np.zeros(mesh.num_elements_dense)
+    power_field_dense = np.zeros(mesh.num_elements_dense, dtype=np.float32)
     centroids = mesh.get_element_centroids_dense()
     cx, cy, cz = centroids[:, 0], centroids[:, 1], centroids[:, 2]
     
@@ -70,20 +81,15 @@ def main():
         if not start_lp: continue
         
         box_mask = (mesh.box_ids.flatten() == bid)
-        ox, oy, oz = box.origin
-        for blk in start_lp.blocks:
-            gx1, gy1 = ox + blk.min_x, oy + blk.min_y
-            gx2, gy2 = ox + blk.max_x, oy + blk.max_y
-            src_mask = box_mask & (cx >= gx1) & (cx <= gx2) & (cy >= gy1) & (cy <= gy2)
+        
         if box.power_face and box.power_face.lower() in ['top', 'bottom']:
              # This is a Surface Load, skip Volumetric
              # verify alignment?
              pass 
         else:
              # Volumetric
-             count = np.count_nonzero(src_mask)
-             if count > 0:
-                 power_field_dense[src_mask] += blk.power / count
+             # Delegate to LayoutParser (Refactored)
+             start_lp.apply_power_mapping(box.origin, (cx, cy, cz), box_mask, power_field_dense)
 
     # 6. Solve
     solver = ThermalSolver3D(mesh, cfg.materials)
@@ -97,7 +103,7 @@ def main():
         face_name = box.power_face.lower()
         if face_name not in ['top', 'bottom']: continue
         
-        print(f"Applying Surface Power for Box '{box.name}' on {face_name}...")
+        logging.info(f"Applying Surface Power for Box '{box.name}' on {face_name}...")
         
         # Determine Facet
         # Need element indices for this box
@@ -120,7 +126,7 @@ def main():
             face_mask = np.abs(b_cz - min_z) < tol
             
         if face_mask is None or np.count_nonzero(face_mask) == 0:
-            print("  No face elements found.")
+            logging.warning("  No face elements found.")
             continue
             
         target_indices = box_elem_indices[face_mask]
@@ -133,7 +139,7 @@ def main():
             lp = layout_cache[fp_path]
             
             # Map Blocks to Surface Elements
-            # q_flux_map = np.zeros(len(target_indices))
+            # q_flux_map = np.zeros(len(target_indices), dtype=np.float32)
             
             # Since we iterate via blocks, let's do that
             # Total Box Area?
@@ -143,29 +149,12 @@ def main():
             f_cy = cy[target_indices]
             f_cz = cz[target_indices] # Should be constant
             
-            # Accumulate Total Power per block into Q (Flux)
-            # Flux q = Power / Area.
-            # But here we apply POWER to elements based on intersection.
-            # fem_engine need apply_surface_power(indices, power_per_element)
-            # Let's compute 'power_per_element'
-            
-            ox, oy, oz = box.origin
-            
-            power_per_elem = np.zeros(len(target_indices))
-            
-            for blk in lp.blocks:
-                gx1, gy1 = ox + blk.min_x, oy + blk.min_y
-                gx2, gy2 = ox + blk.max_x, oy + blk.max_y
-                
-                # Check overlap
-                in_blk = (f_cx >= gx1) & (f_cx <= gx2) & (f_cy >= gy1) & (f_cy <= gy2)
-                count = np.count_nonzero(in_blk)
-                if count > 0:
-                    power_per_elem[in_blk] += blk.power / count
+            # Use LayoutParser to map power (Refactored)
+            power_per_elem = lp.map_power_to_elements(f_cx, f_cy, box.origin)
                     
             # Check Total Power
             total = np.sum(power_per_elem)
-            print(f"  Total Surface Power applied: {total:.4f} W")
+            logging.info(f"  Total Surface Power applied: {total:.4f} W")
             
             # Call Solver
             solver.apply_surface_power_load(target_indices, face_name, power_per_elem)
@@ -176,7 +165,7 @@ def main():
     for bid, box in enumerate(cfg.sim_config.boxes):
         if not box.bcs: continue
         
-        print(f"Applying BCs for Box '{box.name}'...")
+        logging.info(f"Applying BCs for Box '{box.name}'...")
         
         # Identify Elements belonging to Box
         # box_ids is a dense array (Nz-1, Ny-1, Nx-1)
@@ -271,7 +260,7 @@ def main():
     # Export Slices (v8.0)
     if args.export_slice:
         from post_process import SliceExporter
-        print(f"Post-Processing Request: {args.export_slice}")
+        logging.info(f"Post-Processing Request: {args.export_slice}")
         exporter = SliceExporter(mesh, T)
         
         # Parse args: z=0.005,res=100,100
@@ -290,7 +279,7 @@ def main():
         exporter.export_z_slice(z_val, res, out_name)
     
     # 7b. Post-Process Export
-    print(f"Exporting to {args.gridSteadyFile}...")
+    logging.info(f"Exporting to {args.gridSteadyFile}...")
     VTKExporter.export_vtu(args.gridSteadyFile, mesh, temperature_field=T, flux_field=q, power_field_dense=power_field_dense)
     
     # Collect Metrics
@@ -321,18 +310,8 @@ def main():
 
 
 # --- Utils ---
-class Logger(object):
-    def __init__(self):
-        self.terminal = sys.stdout
-        self.log = open("solver.log", "w", buffering=1) # Line buffered
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
-        
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
+# --- Utils ---
+# Logger class removed in v10.2 in favor of logging module
 
 def save_run_meta(args, cfg, stats):
     import json
@@ -394,7 +373,7 @@ def generate_report(mesh, T_field, cfg, stats):
         f.write(f"Global Min Temp: {np.min(T_field):.2f} C\n")
         f.write("-" * 40 + "\n")
         
-        print(f"[Results] Global Max: {t_max_val:.2f} C at {t_max_pos}")
+        logging.info(f"[Results] Global Max: {t_max_val:.2f} C at {t_max_pos}")
         
         # Per-Component Stats
         # Need to reconstruct box mapping if not saved on mesh
@@ -465,21 +444,16 @@ def generate_report(mesh, T_field, cfg, stats):
                      
                      line = f"{box.name:<20} | {t_node_max:<8.2f} | {t_elem_max:<8.2f} | {t_avg:<8.2f} | {t_min:<8.2f}\n"
                      f.write(line)
-                     print(line.strip())
+                     logging.info(line.strip())
                  else:
                      line = f"{box.name:<20} | {'-':<8} | {'-':<8} | {'-':<8} | {'-':<8}\n"
                      f.write(line)
-                     print(line.strip())
+                     logging.info(line.strip())
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"[Results] Error calculating stats: {e}")
+            logging.exception(f"[Results] Error calculating stats: {e}")
             f.write(f"Error calculating stats: {e}\n")
                 
-    print(f"Report saved to {os.path.abspath('simulation_report.txt')}")
+    logging.info(f"Report saved to {os.path.abspath('simulation_report.txt')}")
 
 if __name__ == "__main__":
-    # Setup File Logging (Tee)
-    if "--check" not in sys.argv:
-        sys.stdout = Logger()
     main()

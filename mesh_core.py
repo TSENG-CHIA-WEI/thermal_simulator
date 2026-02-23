@@ -1,59 +1,14 @@
 import os
 import numpy as np
-from config_parser import SimConfig, BoxDef
+from config_parser import SimConfig, BoxDef, MaterialProp
+from typing import Dict
 
-class Mesh3D:
-    def __init__(self, x_grid, y_grid, z_grid, active_mask, material_ids, box_ids):
-        """
-        active_mask: boolean array (nz-1, ny-1, nx-1) indicating if element exists.
-        material_ids: array (nz-1, ny-1, nx-1)
-        
-        We store full dense arrays for simplified indexing, but Solver will compressed them.
-        """
-        self.x_grid = x_grid
-        self.y_grid = y_grid
-        self.z_grid = z_grid
-        self.active_mask = active_mask
-        self.material_ids = material_ids
-        self.box_ids = box_ids # Maps element to index in sim_config.boxes
-        
-        self.nx = len(x_grid)
-        self.ny = len(y_grid)
-        self.nz = len(z_grid)
-        
-    @property
-    def num_nodes(self):
-        return self.nx * self.ny * self.nz
-
-    @property
-    def num_elements_dense(self):
-        return (self.nx - 1) * (self.ny - 1) * (self.nz - 1)
-        
-    @property
-    def num_active_elements(self):
-        return np.count_nonzero(self.active_mask)
-        
-    def get_element_centroids_dense(self):
-        xc = 0.5 * (self.x_grid[:-1] + self.x_grid[1:])
-        yc = 0.5 * (self.y_grid[:-1] + self.y_grid[1:])
-        zc = 0.5 * (self.z_grid[:-1] + self.z_grid[1:])
-        
-        # Z-slow, Y, X order
-        gv_z, gv_y, gv_x = np.meshgrid(zc, yc, xc, indexing='ij')
-        return np.stack([gv_x.flatten(), gv_y.flatten(), gv_z.flatten()], axis=1)
-
-    def get_node_pos(self, node_idx):
-        """Converts flat node index to (x, y, z) coordinates."""
-        # Row-major (Z, Y, X)
-        nx, ny = self.nx, self.ny
-        k = node_idx // (ny * nx)
-        j = (node_idx % (ny * nx)) // nx
-        i = node_idx % nx
-        return (self.x_grid[i], self.y_grid[j], self.z_grid[k])
+from common.structures import Mesh3D
 
 class ActiveMeshGenerator:
-    def __init__(self, sim_config: SimConfig, max_element_size=0.002):
+    def __init__(self, sim_config: SimConfig, materials: Dict[int, MaterialProp], max_element_size=0.002):
         self.cfg = sim_config
+        self.materials = materials
         self.max_h = max_element_size
         
     def _generate_linear_ticks(self, start, end, step):
@@ -234,6 +189,29 @@ class ActiveMeshGenerator:
             # 1. Determine Context and Target Resolution
             target_h = 0.005 # Default Global
             
+            # Physics-Aware Bias Calculation
+            # Default to conservative expansion
+            bias = 1.3
+            max_k = 0.5 # Default low conductivity
+            
+            # Determine Max Conductivity in this region
+            if is_solid:
+                for b in relevant_boxes:
+                    if b.material_id in self.materials:
+                        mat = self.materials[b.material_id]
+                        # Use max component (anisotropic safety)
+                        k_eff = max(mat.kx, mat.ky, mat.kz, mat.k)
+                        max_k = max(max_k, k_eff)
+            
+            # Grading Rules:
+            # High K (Sim/Cu > 100) -> Fast Spreading (Bias 1.5)
+            # Med K (Alumina > 20) -> Normal (Bias 1.3)
+            # Low K (Oxide < 2) -> Slow Spreading (Bias 1.15) to capture gradients
+            if max_k > 100.0:
+                 bias = 1.5
+            # elif max_k < 2.0:
+            #      bias = 1.25 # Kept at default 1.3 to prevent element explosion
+            
             if is_solid:
                 # Inside a Heat Source or Active Component
                 # User Request: "Encrypt to 6 Million Elements"
@@ -245,6 +223,10 @@ class ActiveMeshGenerator:
                     target_h = active_box.mesh_size
                 else:
                     target_h = 0.002 # 2.0mm for Passive Solids (Mold, etc)
+                
+                # Apply ROI Weighting
+                if hasattr(active_box, 'mesh_weight') and active_box.mesh_weight != 1.0:
+                     target_h /= active_box.mesh_weight
                     
             elif is_gap:
                  # Gap between Solids
@@ -261,11 +243,15 @@ class ActiveMeshGenerator:
             # - Tiny Sliver (0.05mm) / 0.2mm -> 0.25 -> 1 element (Robust, no explosion)
             
             # Apply grading only for large non-critical regions
-            use_grading = (not is_solid) and (length > target_h * 2.0)
+            # Use physics-aware bias
+            # Optimization: Allow grading for Passive Solids (HeatSink, Mold) too!
+            # Only forbid grading for "Active Sources" (Floorplans)
+            is_critical = is_solid and bool(active_box.floorplan_file)
+            use_grading = (not is_critical) and (length > target_h * 2.0)
             
             ticks = []
             if use_grading:
-                 ticks = self._generate_graded_subinterval(start, end, target_h)
+                 ticks = self._generate_graded_subinterval(start, end, target_h, bias)
             else:
                  n_elements = max(1, int(np.round(length / target_h)))
                  # Safety: if length is noticeably larger than target (e.g. 1.5x), ensure at least 2
@@ -320,7 +306,7 @@ class ActiveMeshGenerator:
              
         return merged
 
-    def _generate_graded_subinterval(self, start, end, max_h):
+    def _generate_graded_subinterval(self, start, end, max_h, bias=1.3):
         # Biased Graded Mesh (Symmetric Geometric Expansion)
         # Expands from 'start' and 'end' towards the center using 'max_h' as the base size.
         # Saves elements in large voids (Bulk).
@@ -329,7 +315,7 @@ class ActiveMeshGenerator:
         if length <= max_h:
             return [start, end]
             
-        bias = 1.3 # Aggressive expansion
+        # Bias acts as the expansion ratio (h_next = h * bias)
         h_limit = 0.005 # Cap max element size at 5mm (User context: chip is ~30mm, 5mm is reasonable for far field)
         
         # 1. Generate tick list from Left

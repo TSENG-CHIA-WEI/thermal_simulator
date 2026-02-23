@@ -45,7 +45,7 @@ def main():
     
     # 2. Generate Active Mesh
     print(f"Generating Active Sparse Mesh (Max Size: {mesh_res}m)...")
-    gen = ActiveMeshGenerator(cfg.sim_config, max_element_size=mesh_res)
+    gen = ActiveMeshGenerator(cfg.sim_config, cfg.materials, max_element_size=mesh_res)
     mesh = gen.generate()
     
     # 3. Floorplan Mapping

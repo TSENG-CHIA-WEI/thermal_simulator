@@ -15,7 +15,7 @@ from pyvistaqt import QtInteractor
 class ThermoStudio(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ThermoStudio v3.0 (Classic Stable)")
+        self.setWindowTitle("ThermoStudio v3.1 (NCM Edition)")
         self.resize(1600, 1000)
         
         # State
@@ -190,7 +190,8 @@ class ThermoStudio(QMainWindow):
         # Search for ANY .config file in the project dir
         try:
              files = [f for f in os.listdir(self.project_dir) if f.endswith(".config")]
-        except:
+        except Exception as e:
+             print(f"[GUI ERROR] Failed to list config files: {e}")
              return
              
         if not files: return
@@ -262,7 +263,7 @@ class ThermoStudio(QMainWindow):
         
         # Absolute path fix
         root_dir = os.path.dirname(os.path.abspath(__file__))
-        solver_script = os.path.join(root_dir, "ThermoSim.py")
+        solver_script = os.path.join(root_dir, "ThermoSim_NCM.py")
         
         abs_proj = os.path.abspath(self.project_dir)
         
@@ -393,7 +394,8 @@ class ThermoStudio(QMainWindow):
              # Dynamic Config Finding
              try:
                  files = [f for f in os.listdir(self.project_dir) if f.endswith(".config")]
-             except:
+             except Exception as e:
+                 print(f"[GUI ERROR] Failed to list config files for bounds: {e}")
                  return
 
              if not files: return
@@ -420,7 +422,8 @@ class ThermoStudio(QMainWindow):
                                               origin[1], origin[1]+size[1], 
                                               origin[2], origin[2]+size[2]))
                          self.plotter.add_mesh(box, style='wireframe', color='blue', line_width=2)
-                     except:
+                     except Exception as e:
+                         print(f"[GUI ERROR] Failed to parse box section '{sec}': {e}")
                          pass
         except Exception as e:
              print(f"Failed to draw bounds: {e}")

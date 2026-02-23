@@ -2,54 +2,7 @@ import os
 import numpy as np
 from config_parser import SimConfig, BoxDef
 
-class Mesh3D:
-    def __init__(self, x_grid, y_grid, z_grid, active_mask, material_ids, box_ids):
-        """
-        active_mask: boolean array (nz-1, ny-1, nx-1) indicating if element exists.
-        material_ids: array (nz-1, ny-1, nx-1)
-        
-        We store full dense arrays for simplified indexing, but Solver will compressed them.
-        """
-        self.x_grid = x_grid
-        self.y_grid = y_grid
-        self.z_grid = z_grid
-        self.active_mask = active_mask
-        self.material_ids = material_ids
-        self.box_ids = box_ids # Maps element to index in sim_config.boxes
-        
-        self.nx = len(x_grid)
-        self.ny = len(y_grid)
-        self.nz = len(z_grid)
-        
-    @property
-    def num_nodes(self):
-        return self.nx * self.ny * self.nz
-
-    @property
-    def num_elements_dense(self):
-        return (self.nx - 1) * (self.ny - 1) * (self.nz - 1)
-        
-    @property
-    def num_active_elements(self):
-        return np.count_nonzero(self.active_mask)
-        
-    def get_element_centroids_dense(self):
-        xc = 0.5 * (self.x_grid[:-1] + self.x_grid[1:])
-        yc = 0.5 * (self.y_grid[:-1] + self.y_grid[1:])
-        zc = 0.5 * (self.z_grid[:-1] + self.z_grid[1:])
-        
-        # Z-slow, Y, X order
-        gv_z, gv_y, gv_x = np.meshgrid(zc, yc, xc, indexing='ij')
-        return np.stack([gv_x.flatten(), gv_y.flatten(), gv_z.flatten()], axis=1)
-
-    def get_node_pos(self, node_idx):
-        """Converts flat node index to (x, y, z) coordinates."""
-        # Row-major (Z, Y, X)
-        nx, ny = self.nx, self.ny
-        k = node_idx // (ny * nx)
-        j = (node_idx % (ny * nx)) // nx
-        i = node_idx % nx
-        return (self.x_grid[i], self.y_grid[j], self.z_grid[k])
+from common.structures import Mesh3D
 
 class ActiveMeshGenerator:
     def __init__(self, sim_config: SimConfig, max_element_size=0.002):
@@ -60,7 +13,7 @@ class ActiveMeshGenerator:
         """Generates ticks from start to end with given step, inclusive."""
         if step <= 0: return [start, end]
         # Use arange but be careful with float precision at the end
-        ticks = np.arange(start, end, step)
+        ticks = np.arange(start, end, step, dtype=np.float32)
         # Ensure 'end' is usually handled by the loop logic or strictly added
         # We return a list that will be set-merged later
         return ticks.tolist() + [end]
@@ -79,7 +32,7 @@ class ActiveMeshGenerator:
             if (curr - prev) > min_gap:
                 filtered.append(curr)
                 
-        return np.array(filtered)
+        return np.array(filtered, dtype=np.float32)
 
     def generate(self) -> Mesh3D:
         # 1. Hierarchical Grid Generation
@@ -118,25 +71,13 @@ class ActiveMeshGenerator:
                 fill_loc(oy, h, h_loc, y_ticks_set)
                 fill_loc(oz, d, h_loc, z_ticks_set)
 
-            # 1.3 Power-Aware Refinement (FAM)
+            # 1.3 Power-Aware Refinement (FAM) - DISABLED for Grid Grading
+            # The LayoutParser automatically maps power onto whatever grid we generate.
+            # Injecting hard ticks for every block forces the entire XY plane to be extremely dense,
+            # destroying the benefits of Mesh Efficiency (Grid Stretching).
             if box.floorplan_file:
-                fp_path = box.floorplan_file
-                if os.path.exists(fp_path):
-                    try:
-                        from layout_parser import LayoutParser
-                        lp = LayoutParser()
-                        lp.parse(fp_path)
-                        for block in lp.blocks:
-                            x_ticks_set.add(ox + block.min_x)
-                            x_ticks_set.add(ox + block.max_x)
-                            y_ticks_set.add(oy + block.min_y)
-                            y_ticks_set.add(oy + block.max_y)
-                            
-                            # Injection of center line for peak accuracy in small sources
-                            x_ticks_set.add(ox + (block.min_x + block.max_x)/2.0)
-                            y_ticks_set.add(oy + (block.min_y + block.max_y)/2.0)
-                    except Exception as e:
-                        print(f"    [Warning] Could not parse floorplan {fp_path}: {e}")
+                pass 
+
 
             # 1.4 Constraint Enforcement (Smart Heuristic)
             # If the user didn't specify MinElements, but the layer is thinner than max_h,
@@ -152,9 +93,16 @@ class ActiveMeshGenerator:
             # Auto-upgrade logic (only if default 1 is used)
             if effective_min <= 1:
                 # We prioritize Z-axis for stacked dies, but logic applies to all.
-                # If it's a "Thin Layer" (like Bonding/Oxide), force 3 elements.
-                if is_thin_z: effective_min = 3
+                # If it's a "Thin Layer" (like Bonding/Oxide), force 3 elements UNLESS it's a SmartLayer.
+                # SmartLayer means we accept 1 element and handle physics in Solver.
+                is_smart = getattr(box, 'smart_layer', False)
+                # DEBUG print removed
+                
+                if is_thin_z and not is_smart: 
+                    effective_min = 3
             
+            # DEBUG print removed
+
             if effective_min > 0:
                 def enforce_min(start, length, min_el, tset):
                     if min_el <= 0: return
@@ -175,9 +123,9 @@ class ActiveMeshGenerator:
                 # However, box.min_elements (Explicit) applies to ALL axes.
                 # Our auto-heuristic should only apply to the THIN axis.
                 
-                min_x = 3 if (is_thin_x and box.min_elements <= 1) else box.min_elements
-                min_y = 3 if (is_thin_y and box.min_elements <= 1) else box.min_elements
-                min_z = 3 if (is_thin_z and box.min_elements <= 1) else box.min_elements # Use calculated effective
+                min_x = 3 if (is_thin_x and box.min_elements <= 1 and not is_smart) else box.min_elements
+                min_y = 3 if (is_thin_y and box.min_elements <= 1 and not is_smart) else box.min_elements
+                min_z = 3 if (is_thin_z and box.min_elements <= 1 and not is_smart) else box.min_elements
                 
                 enforce_min(ox, w, min_x, x_ticks_set)
                 enforce_min(oy, h, min_y, y_ticks_set)
@@ -185,57 +133,67 @@ class ActiveMeshGenerator:
 
         # 2. Conformal Gap-Filling (Minimal Dummy Mesh)
         # Instead of subdividing per-box, we subdivide the gaps between ALL hard constraints.
-        x_grid = self._subdivide_gaps(x_ticks_set, self.max_h)
-        y_grid = self._subdivide_gaps(y_ticks_set, self.max_h)
-        z_grid = self._subdivide_gaps(z_ticks_set, self.max_h)
+        global_expansion_ratio = getattr(self.cfg, 'expansion_ratio', 1.2)
+        x_grid = self._subdivide_gaps(x_ticks_set, self.max_h, global_expansion_ratio)
+        y_grid = self._subdivide_gaps(y_ticks_set, self.max_h, global_expansion_ratio)
+        z_grid = self._subdivide_gaps(z_ticks_set, self.max_h, global_expansion_ratio)
+
         
         nx_e, ny_e, nz_e = len(x_grid)-1, len(y_grid)-1, len(z_grid)-1
         print(f"  Gap-Filled Grid: {nx_e}x{ny_e}x{nz_e} elements.")
         
         return self._finalize_mesh(x_grid, y_grid, z_grid, nx_e, ny_e, nz_e, sorted_items)
 
-    def _subdivide_gaps(self, points_set, max_h):
+    def _subdivide_gaps(self, points_set, max_h, bias=1.2):
         """Subdivides gaps between sorted points.
         Implements 'Geometric Biasing': Small steps near boundaries, larger steps in the middle."""
         points = self._filter_slivers(list(points_set))
+        if len(points) == 0:
+             return np.array([])
         grid = [points[0]]
         
-        # Growth factor for "Subtraction" (1.08 means each step is 8% larger than previous)
-        # Further reducing from 1.15 to 1.08 to move even closer to baseline T_max.
-        bias = 1.08 
+        # We ensure bias is at least slightly > 1.0 to prevent infinite loops, but default is 1.2
+        if bias <= 1.01: bias = 1.01
         
         for i in range(len(points)-1):
             p0, p1 = points[i], points[i+1]
             gap = p1 - p0
             
+            # Estimate Local step size at the boundary for smooth transition
+            h_start0 = points[i] - points[i-1] if i > 0 else max_h / 5.0
+            h_start1 = points[i+2] - points[i+1] if i < len(points)-2 else max_h / 5.0
+            
+            # Clamp starting steps to reasonable bounds
+            h_start0 = min(max_h, max(1e-6, h_start0))
+            h_start1 = min(max_h, max(1e-6, h_start1))
+            
             # Only subdivide if gap exceeds max_h
             if gap > max_h * 1.05:
-                # If gap is huge (Bulk regions like Heatsink), use Graded Mesh
+                # If gap is huge, use Graded Mesh
                 if gap > max_h * 3.0:
-                    # Grow from both boundaries towards the center
                     half_gap = gap / 2.0
                     
                     # Forward from p0
-                    curr_h = max_h
+                    curr_h = h_start0
                     curr_p = p0
                     while (curr_p + curr_h) < (p0 + half_gap - 0.1 * max_h):
                         curr_p += curr_h
                         grid.append(curr_p)
-                        curr_h = min(curr_h * bias, max_h * 20.0) # Cap at 20x max_h
+                        curr_h = min(curr_h * bias, max_h * 10.0) # Allow bulk to grow larger
                     
                     # Backward from p1
                     rev_pts = []
-                    curr_h = max_h
+                    curr_h = h_start1
                     curr_p = p1
                     while (curr_p - curr_h) > (p1 - half_gap + 0.1 * max_h):
                         curr_p -= curr_h
                         rev_pts.append(curr_p)
-                        curr_h = min(curr_h * bias, max_h * 20.0)
+                        curr_h = min(curr_h * bias, max_h * 10.0)
                     
                     for pt in reversed(rev_pts):
                         grid.append(pt)
                 else:
-                    # Standard linear subdivision for small gaps (Precision zones)
+                    # Standard linear subdivision for small gaps
                     n_int = int(np.ceil(gap / max_h))
                     step = gap / n_int
                     for j in range(1, n_int): grid.append(p0 + j * step)
@@ -243,7 +201,7 @@ class ActiveMeshGenerator:
             grid.append(p1)
             
         # Ensure unique, sorted, and precision-safe
-        return np.array(sorted(list(set(np.round(grid, 12)))))
+        return np.array(sorted(list(set(np.round(grid, 12)))), dtype=np.float32)
         
     def _finalize_mesh(self, x_grid, y_grid, z_grid, nx_e, ny_e, nz_e, sorted_items):
         # 3. Filter Active Elements (Sparse) & Map Materials

@@ -44,3 +44,21 @@ legacy/
 dump.rdb
 work/
 *.vtk
+
+# Agent / Dev Only (not part of main program)
+.agent/
+.local/
+.gemini/
+.github/
+tests/
+docs/
+review-pr/
+tdd/
+AGENTS.md
+user_rules.md
+
+# Generated output files
+projects/*/output.*
+projects/*/solver.log
+projects/*/run_meta.json
+projects/*/simulation_report.txt
