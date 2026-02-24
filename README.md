@@ -24,7 +24,7 @@
 *   Python 3.10+
 *   NVIDIA GPU (可選，強烈推薦用於加速 CUDA 求解)
 
-### 安裝步驟
+### 安裝步驟（一鍵完成）
 
 1. **取得最新程式碼**
    ```bash
@@ -32,23 +32,24 @@
    cd thermal_simulator
    ```
 
-2. **建立虛擬環境 (建議)**
+2. **執行自動環境設定腳本**
    ```bash
-   python -m venv venv
-   # Windows 啟動:
-   .\venv\Scripts\activate
-   # Linux/macOS 啟動:
-   # source venv/bin/activate
+   python setup_env.py
    ```
+   此腳本會自動完成以下工作：
+   - 建立 Python 虛擬環境 (`venv/`)
+   - 安裝所有 CPU 核心套件 (NumPy, SciPy, PyVista, PyQt5)
+   - **自動偵測您的 CUDA 版本**，安裝對應的 GPU 加速套件 (CuPy)
+     - CUDA 11.x → `cupy-cuda11x`
+     - CUDA 12.x → `cupy-cuda12x`
+     - 無 CUDA → 跳過（純 CPU 模式，程式仍可正常運行）
 
-3. **安裝相依套件**
-   首先安裝核心 CPU 套件：
+3. **啟動虛擬環境**
    ```bash
-   pip install numpy scipy
-   ```
-   *(如果需要 GPU 加速，請安裝 CuPy)*
-   ```bash
-   pip install cupy-cuda12x  # 請依據您的 CUDA 版本 (11x 或 12x) 選擇
+   # Windows:
+   .\venv\Scripts\activate
+   # Linux/macOS:
+   source venv/bin/activate
    ```
 
 ---
